@@ -60,6 +60,7 @@ agent = BlackJackAgent(learning_rate, s_epsilon, ep_decay, f_epsilon)
 
 env = gym.wrappers.RecordEpisodeStatistics(env, deque_size = n_ep)
 
+# Q-learning
 for episode in tqdm(range(n_ep)):
     obs, info = env.reset()
     done = False
