@@ -60,4 +60,3 @@ optimizer.step()
 pred = linear(x)
 loss = criterion(pred, y)
 print('loss after 1 step optimization: ', loss.item())
-
