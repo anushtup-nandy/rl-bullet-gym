@@ -37,9 +37,13 @@ class FCQ(nn.Module):
 
     def _format(self, state):
         x = state
+        print(f"State before formatting: {x}, type: {type(x)}, shape: {getattr(x, 'shape', 'unknown')}")
+        if isinstance(x, tuple):
+            x = x[0]
         if not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, device = self.device, dtype = torch.float64) # basically if any data is passed onto the neural net which isn't a tensor, it'll convert instead of throwing an error
+            x = torch.tensor(x, device = self.device, dtype = torch.float32) # basically if any data is passed onto the neural net which isn't a tensor, it'll convert instead of throwing an error
             x = x.unsqueeze(0) #giving it one more dimension --> specifically height. Let x = [[1, 2], [3, 4]] then after unsqeezing x = [[[1, 2], [3, 4]]]
+        print(f"State after formatting: {x}, type: {type(x)}, shape: {x.shape}")
         return x
     
     def forward(self, state):
