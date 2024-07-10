@@ -14,4 +14,3 @@ def computeLogProb(logits):
 #             hx, cx, frame_queue, env,
 #             current_state, ep_lenght, action_length, 
 #             layers_, tot_r, scores, lock, avg_ep,  scores_avg):
-    
