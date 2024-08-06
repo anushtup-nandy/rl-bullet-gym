@@ -134,7 +134,17 @@ def computeLogProb(logits):
 '''
 - Function interacts with env to collect experiences over a series of steps
 - Initialize lists
-- set of fla
+- set of flags
+- loop through the episodes
+- prep current state
+- forward pass through the model
+- take some action
+- add to experience
+- update totals and states
+- terminate the episode
+- bootstrap
+- append to step-array
+- return the vals
 '''
 def rollout(pi, counter, params, model,
             hx, cx, frame_queue, env,
@@ -148,14 +158,14 @@ def rollout(pi, counter, params, model,
     cx_s = []
     steps_array = []
 
-    fin_flag = False
+    flag_finish = False
 
     for i in range(params['rollout_size']):
         ep_length += 1
         current_state = current_state.unsqueeze(0).permute(0, 3, 1, 2)
         with torch.no_grad(): 
             #logits, values, hidden and cell states from current state
-            logits, vals, (hx_, cx_) = model(current_state,(hx, cx))
+            logits, _, (hx_, cx_) = model(current_state,(hx, cx))
             #get the action
             action = computeLogProb(logits)
         
@@ -166,6 +176,7 @@ def rollout(pi, counter, params, model,
         masks.append(done)
         hx_s.append(hx)
         cx_s.append(cx)
+
         tot_r += r
         frame_queue.append(frame_proc(n_f))
         next_state = stack_frames(frame_queue)
@@ -185,12 +196,12 @@ def rollout(pi, counter, params, model,
             current_state = input_frames
             ep_length = 0
             print(
-                "Process: ", p_i,
+                "Process: ", pi,
                 "Update:", counter.value,
                 "| Ep_r: %.0f" % tot_rew,
             )
             print('------------------------------------------------------')
-            flag_finish, scores_avg = print_avg(scores, p_i, tot_rew, lock, avg_ep, params, flag_finish, scores_avg)                        
+            flag_finish, scores_avg = print_avg(scores, pi, tot_rew, lock, avg_ep, params, flag_finish, scores_avg)                        
             print('\n')
             if flag_finish == True:
                 break
@@ -206,4 +217,100 @@ def rollout(pi, counter, params, model,
        
         return hx, cx, steps_array, ep_length, frame_queue, current_state, tot_rew, counter, flag_finish, scores_avg
     
-# def compute_returns(steps_array, gamma, model):
+def compute_returns(steps_array, gamma, model):
+    states, actions, rewards, masks, hx_s, cx_s, f_val = steps_array[0]
+    R = f_val
+    returns = torch.zeros(len(rewards), 1)
+    
+    #discounted returns--> iterate over the reversed memory
+    for j in reversed(range(len(rewards))):
+        R = rewards[j] + R*gamma*(1-masks[j])
+        returns[j] = R
+
+    #batch states
+    s = torch.concat(states, dim = 0)
+    a = torch.concat(actions).unsqueeze(1)
+    hxs = torch.cat(hx_s)
+    cxs = torch.cat(cx_s)
+
+    #log prob --> forward pass through model
+    logits, values, _ = model((s, (hxs, cxs))) 
+    probs = F.softmax(logits, dim = -1) #categorical distribution of logits  Applies the softmax function to the logits to get the probabilities of actions.
+    log_probs = F.log_softmax(logits, dim = -1) # Applies the log-softmax function to the logits to get the log probabilities of actions.
+    action_log_probs = log_probs.gather(1, a) #Gathers the log probabilities corresponding to the actions taken during the rollout. This matches the log probabilities to the actual actions performed
+    advantages = returns - values
+
+    return probs, log_probs, action_log_probs, advantages, returns, values
+
+def ensure_shared_grads(local_model, shared_model):
+    for param, shared_param in zip(local_model.parameters(),shared_model.parameters()):
+        if shared_param.grad is not None:
+            return
+        shared_param.grad = param.grad 
+
+def update_parameters(probs, log_probs, action_log_probs, advantages, returns, values, value_coeff, entropy_coef):
+    #policy loss
+    policy_loss = -(action_log_probs * advantages.detach()).mean() 
+    #value loss
+    value_loss = torch.nn.functional.mse_loss(values, returns)
+    #entropy loss
+    entropy_loss = (probs * log_probs).sum(dim=1).mean()
+    
+    a3c_loss = policy_loss + value_coeff * value_loss + entropy_coef * entropy_loss
+    
+    return a3c_loss, value_loss, policy_loss, entropy_loss
+    
+def print_avg(scores, p_i, tot_rew, lock, avg_ep, params, flag_finish, array_avgs):
+    print('\n')
+    with lock:
+        scores.append([p_i, tot_rew])
+        #print('scores', scores)
+        all_found = 0
+        #check if all process present
+        for p_k in range(0, params['n_process']):
+            ff = False
+            for s_k in scores:
+                if p_k == s_k[0] and ff==False:
+                    all_found+=1
+                    ff = True
+                
+        if all_found == params['n_process']:
+            avg = 0
+            for p_j in range(0, params['n_process']):
+                idx = 0
+                found = False
+                for s_i in scores:
+                    if p_j == s_i[0] and found==False:
+                        avg += s_i[1]
+                        found=True
+                        scores.pop(idx)
+                    idx+=1
+                    
+            with avg_ep.get_lock():
+                avg_ep.value +=1
+                print('\n')
+                print('------------ AVG-------------')
+                print(f"Ep: {avg_ep.value} | AVG: {avg/params['n_process']}")
+                print('-----------------------------')
+                array_avgs.append(avg/params['n_process'])
+                
+                if len(array_avgs)>100:
+                    avg = np.mean(np.array(array_avgs[-100:]))
+                    print('\n')
+                    print('------------------------------')
+                    print('AVG last 100 scores: ', avg)
+                    print('------------------------------')
+                    print('\n')
+                    if avg >= params['mean_reward']:
+                        flag_finish = True
+                        print('------------------------')
+                        print('GAME FINISHED')
+                        print('------------------------')
+                else:
+                    flag_finish = False
+        else:
+            print('Not enough process completed to compute AVG...')
+            flag_finish = False
+        
+        return flag_finish, array_avgs
+
